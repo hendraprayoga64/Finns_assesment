@@ -1,0 +1,29 @@
+sequenceDiagram
+  autonumber
+  participant O as Opera PMS
+  participant W as Webhook Express
+  participant Q as Outbox SQLite
+  participant K as Worker tiap 2 detik
+  participant N as NetSuite
+
+  O->>W: POST /webhook/opera dengan Bearer token
+  alt token tidak ada atau salah
+    W-->>O: 401 atau 403
+  else token valid
+    W->>Q: INSERT OR IGNORE idempotency_key dan payload
+    W-->>O: 202 Accepted, duplicate true atau false
+  end
+
+  loop proses di background
+    K->>Q: ambil baris pending yang sudah waktunya
+    K->>K: tanda tangan HMAC-SHA256 atas timestamp.nonce.body
+    K->>N: POST dengan X-Signature dan Idempotency-Key
+    alt 2xx
+      N-->>K: OK
+      K->>Q: status sent
+    else timeout, 5xx atau 429
+      K->>Q: attempts ditambah 1, exponential backoff
+    else 4xx lainnya atau batas percobaan habis
+      K->>Q: status dead, ditinjau manual
+    end
+  end

@@ -1,0 +1,17 @@
+{
+  "name": "gcp-middleware",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@google-cloud/bigquery": "^7.9.0",
+    "@google-cloud/secret-manager": "^5.6.0",
+    "@graphql-tools/schema": "^10.0.4",
+    "dataloader": "^2.2.2",
+    "express": "^4.19.2",
+    "graphql": "^16.9.0",
+    "graphql-http": "^1.22.1"
+  }
+}

@@ -1,0 +1,30 @@
+flowchart LR
+  subgraph ONPREM["On-premise hotel"]
+    BE["Booking Engine"] --> OPERA["Opera PMS"]
+    SIM["Simphony POS"] --> OPERA
+    CAM["Kamera IoT - penghitung orang"]
+    subgraph EDGE["Server Edge Ubuntu dengan systemd"]
+      EMW["Edge Middleware<br/>POST /webhook/opera<br/>outbox SQLite dan retry"]
+      EIOT["Edge Middleware IoT<br/>POST /api/v1/iot/people-count<br/>buffer SQLite, kirim tiap 60 detik"]
+    end
+  end
+
+  subgraph CLOUD["Cloud"]
+    NS["NetSuite ERP"]
+    subgraph GCP["Google Cloud"]
+      GMW["GCP Middleware<br/>Cloud Run, POST /graphql<br/>DataLoader"]
+      SM["Secret Manager<br/>kredensial OAuth NetSuite"]
+      BQ[("BigQuery<br/>star schema")]
+    end
+  end
+
+  BI["Dashboard BI"]
+
+  OPERA -->|"Bearer Token"| EMW
+  EMW -->|"HMAC-SHA256 + Idempotency-Key"| NS
+  NS -->|"OAuth 2.0"| GMW
+  GMW -.->|"baca secret via ADC"| SM
+  GMW -->|"OIDC via ADC, tanpa JSON key"| BQ
+  CAM -->|"API Key"| EIOT
+  EIOT -->|"Workload Identity Federation"| BQ
+  BI -->|"GraphQL dengan ID token"| GMW

@@ -1,0 +1,14 @@
+{
+  "name": "edge-iot-receiver",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@google-cloud/bigquery": "^7.9.0",
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

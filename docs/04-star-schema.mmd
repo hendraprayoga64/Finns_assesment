@@ -1,0 +1,31 @@
+erDiagram
+  dim_location ||--o{ fact_transactions : memiliki
+  dim_location ||--o{ fact_iot_camera_events : memiliki
+  dim_date ||--o{ fact_transactions : pada_tanggal
+  dim_date ||--o{ fact_iot_camera_events : pada_tanggal
+
+  dim_location {
+    STRING location_id PK
+    STRING location_name
+    STRING area
+  }
+  dim_date {
+    DATE date_key PK
+    INT64 cal_year
+    INT64 cal_month
+    BOOL is_weekend
+  }
+  fact_transactions {
+    STRING transaction_id
+    TIMESTAMP transaction_ts
+    DATE transaction_date FK
+    STRING location_id FK
+    NUMERIC amount
+  }
+  fact_iot_camera_events {
+    STRING event_id
+    TIMESTAMP event_ts
+    DATE event_date FK
+    STRING location_id FK
+    INT64 in_count
+  }
