@@ -1,5 +1,6 @@
 # Distributed Hospitality Ecosystem – Assessment
 
+Ini jawaban saya untuk assessment FINNS. Opera dan NetSuite saya mock. Dari GCP, yang benar-benar saya jalankan hanya BigQuery Sandbox (Module 4); Cloud Run, OIDC, dan Secret Manager baru berupa rancangan.
 
 ```mermaid
 flowchart LR
@@ -8,49 +9,73 @@ flowchart LR
   Cam[IoT Camera] -- API Key --> EdgeIoT[Edge MW IoT<br/>micro-batch 60 dtk] -- WIF --> BQ
 ```
 
-| Path | Isi |
+## Isi repo
+
+| Folder | Isi |
 |---|---|
-| `edge-opera-webhook/` | M1: `server.js`, `edge-webhook.service`, `linux-commands.md`, `mock-netsuite.js` |
-| `edge-iot-receiver/` | M2: `server.js` (API key + micro-batching), `edge-iot.service` |
-| `gcp-middleware/` | M3: schema/resolver GraphQL, DataLoader, Secret Manager, `Dockerfile` |
-| `sql/` | M4: `schema.sql` (DDL), `conversion_rate_query.sql`, `sample_data/*.jsonl` |
-| `docs/architecture.md` | Diagram Mermaid: arsitektur, sequence webhook, alur DataLoader, star schema |
+| `edge-opera-webhook/` | Module 1: `server.js`, `edge-webhook.service`, `linux-commands.md`, `mock-netsuite.js` |
+| `edge-iot-receiver/` | Module 2: `server.js` (API key dan micro-batching), `edge-iot.service` |
+| `gcp-middleware/` | Module 3: schema dan resolver GraphQL, DataLoader, Secret Manager, `Dockerfile` |
+| `sql/` | Module 4: `schema.sql`, `conversion_rate_query.sql`, `sample_data/*.jsonl` |
+| `docs/` | Diagram Mermaid: arsitektur, alur webhook, alur DataLoader, star schema |
 
-**Menjalankan lokal (mock mode, tanpa GCP/NetSuite):** `cp .env.example .env && npm i && npm start` di tiap folder
-(M1 juga: `npm run mock-netsuite`; set `FAIL_RATE=0.5` untuk melihat retry). GraphQL: `POST localhost:8080/graphql`.
-**Module 4 (BigQuery Sandbox, tanpa billing):** jalankan `sql/schema.sql` sekali; muat tiap `sql/sample_data/<tabel>.jsonl` ke tabelnya (JSONL, mode *Append*; DML/`INSERT` diblokir di free tier, load job diizinkan); lalu jalankan `sql/conversion_rate_query.sql` → 3 transaksi / 52 pengunjung = 5,77 %.
+Screenshot hasil uji ada di folder `resultimg/` dan `img_result/` tiap modul.
 
-**Catatan pengujian (ngrok / webhook.site).** *Masuk:* `ngrok http 3000` membuka webhook lokal di URL HTTPS publik untuk mensimulasikan Opera PMS yang memanggil dari luar jaringan lokal (dengan Bearer token baru hasil generate, bukan nilai contoh): request dijawab `202` dalam < 60 ms dan body yang diulang menghasilkan `duplicate:true`. *Keluar:* `NETSUITE_URL` diarahkan ke URL webhook.site untuk memeriksa header `X-Signature`, `X-Timestamp`, `X-Nonce`, dan `Idempotency-Key`; tanda tangan dihitung ulang secara independen dengan `openssl dgst -sha256 -hmac` dan hasilnya cocok. ngrok hanya alat uji – di produksi server Edge berada di belakang firewall/reverse proxy hotel (TLS, IP allow-list, atau jalur privat).
+## Cara menjalankan
+
+Di tiap folder: `cp .env.example .env`, `npm install`, `npm start`. Semuanya jalan di mock mode, tanpa akun GCP atau NetSuite. Untuk Module 1, jalankan juga `npm run mock-netsuite` (tambahkan `FAIL_RATE=0.5` untuk melihat retry). GraphQL ada di `POST localhost:8080/graphql`.
+
+Module 4 di BigQuery Sandbox (tanpa billing): jalankan `sql/schema.sql` sekali, lalu upload tiap file di `sql/sample_data/` ke tabelnya (JSONL, mode Append; `INSERT` diblokir di free tier, load job boleh). Query `sql/conversion_rate_query.sql` memberi 3 transaksi dan 52 pengunjung, jadi conversion rate 5,77%.
+
+## Pengujian dengan ngrok dan webhook.site
+
+ngrok saya pakai untuk membuka webhook lokal ke URL HTTPS publik, seolah-olah Opera memanggil dari luar jaringan (dengan token baru, bukan nilai contoh). Request dijawab 202 di bawah 60 ms, dan body yang dikirim dua kali ditandai `duplicate:true`. Untuk arah sebaliknya, `NETSUITE_URL` saya arahkan ke webhook.site supaya header ke "NetSuite" (`X-Signature`, `X-Timestamp`, `X-Nonce`, `Idempotency-Key`) kelihatan. Tanda tangannya saya hitung ulang dengan `openssl dgst -sha256 -hmac` dan hasilnya sama.
+
+ngrok hanya untuk uji. Di produksi, server Edge sebaiknya di belakang firewall atau reverse proxy hotel dengan TLS dan IP allow-list, atau lewat jalur privat.
 
 ## 1. Idempotency (Module 1)
-Opera (atau retry jaringan) dapat mengirim event yang sama lebih dari sekali, dan pengiriman kita ke NetSuite juga dapat diulang.
-1. **Key**: header `Idempotency-Key` jika dikirim Opera; jika tidak, SHA-256 dari raw body. (Produksi: pakai event/folio id dari Opera, karena dua body yang memang identik akan dianggap satu.)
-2. **Outbox yang tahan crash**: key menjadi `PRIMARY KEY` tabel SQLite; `INSERT OR IGNORE` membuat duplikat tidak berefek, dan webhook tetap menjawab `202` (`duplicate:true`). Baris di-commit *sebelum* kita menjawab, sehingga crash tidak menghilangkan event yang sudah diterima.
-3. **Worker background** menandatangani (`HMAC-SHA256(secret, timestamp.nonce.body)` → `X-Signature`) lalu mengirim. Sukses → `sent`; timeout/5xx/429 → exponential backoff + jitter; 4xx lain atau batas percobaan habis → `dead` (ditinjau manual). Baris yang tertinggal `processing` setelah crash dikembalikan ke `pending` saat boot (at-least-once).
-4. `Idempotency-Key` yang sama diteruskan ke NetSuite agar sisi NetSuite dapat membuang retry kita → efektif sekali (effectively-once).
 
-## 2. Autentikasi BigQuery untuk Edge IoT on-premise (Module 2)
-**Workload Identity Federation (WIF) + service-account impersonation – tanpa JSON key berumur panjang di server.**
-- Server edge membuktikan identitasnya ke identity provider yang kita percaya (OIDC IdP on-prem/Keycloak, atau sertifikat klien X.509 / mTLS); Google STS menukar kredensial itu dengan token berumur pendek yang meng-impersonate service account khusus `sa-iot-edge`.
-- `gcloud iam workload-identity-pools create-cred-config … --output-file=wif-credential-config.json`; file ini **tidak berisi rahasia**; `GOOGLE_APPLICATION_CREDENTIALS` menunjuk ke file itu dan klien BigQuery memakainya lewat ADC.
-- Least privilege: `sa-iot-edge` hanya mendapat `roles/bigquery.dataEditor` pada **satu tabel/dataset** (insert tidak butuh `jobUser`); attribute condition pada pool membatasi host edge mana yang boleh memakainya.
-- Cadangan jika tidak ada IdP: service-account key di `/etc/…` (mode 600, dimiliki `edgeapp`), dirotasi tiap 90 hari – dicatat sebagai opsi yang lebih lemah.
-- **Micro-batching**: tiap request disimpan di buffer SQLite lokal (dijawab 202); tiap 60 dtk timer mengirim hingga 500 baris per panggilan `insert` dan baru menghapusnya setelah BigQuery mengonfirmasi. Jika BigQuery mati, baris tetap di buffer dan dicoba lagi pada tick berikutnya. `insertId = event_id` memberi de-duplikasi retry secara best-effort; tabel fact juga bisa di-de-dup lewat `event_id`.
-- *Catatan:* **sandbox BigQuery tidak mendukung streaming insert** – gunakan `BQ_MODE=mock`, atau ganti ke load job, untuk pengujian di free tier.
+Opera bisa mengirim event yang sama dua kali (misalnya karena retry jaringan), dan pengiriman kita ke NetSuite juga bisa diulang. Supaya tidak tercatat ganda:
 
-## 3. GCP: OIDC, IAM, dan Secret Manager (Module 3)
-**Compute: Cloud Run** (container stateless, scale to zero, HTTPS bawaan, integrasi mudah dengan Secret Manager/IAM; GKE terlalu besar untuk satu API).
-- **Tanpa JSON key**: Cloud Run berjalan sebagai *runtime service account* khusus `sa-graphql-mw`. Library mengambil token berumur pendek untuknya dari metadata server (ADC) – workload identity platform (berbasis OIDC/JWT) yang menandatangani. Role: `bigquery.dataViewer` (dataset), `bigquery.jobUser` (project), `bigquery.dataEditor` hanya pada tabel fact NetSuite, `secretmanager.secretAccessor` pada satu secret.
-- **Akses masuk**: deploy dengan `--no-allow-unauthenticated`; backend BI / pemanggil NetSuite mengirim **OIDC ID token** yang ditandatangani Google (audience = URL service) dan memerlukan `roles/run.invoker`.
-- **CI/CD**: GitHub Actions mengautentikasi dengan WIF (token OIDC GitHub → kredensial berumur pendek), jadi proses deploy juga tanpa key.
-- **Secret Manager**: `tokenUrl/clientId/clientSecret` OAuth2 NetSuite disimpan sebagai satu secret JSON `netsuite-oauth`. Aplikasi membaca `projects/<p>/secrets/netsuite-oauth/versions/latest` saat runtime (`secrets.js`), meng-cache 5 menit, menyimpan access token hanya di memori, dan tidak pernah mencatatnya di log. Di produksi, kunci ke versi tertentu; rotasi dengan menambah versi baru (versi lama dinonaktifkan); akses diaudit lewat Cloud Audit Logs. Alternatif: `gcloud run deploy --set-secrets`.
+1. Tiap event punya key: header `Idempotency-Key` kalau Opera mengirimnya, kalau tidak SHA-256 dari body mentah. (Di produksi sebaiknya pakai ID event atau folio dari Opera, karena dua pesan yang kebetulan identik akan dianggap satu.)
+2. Event disimpan dulu ke outbox SQLite dengan key itu sebagai primary key, memakai `INSERT OR IGNORE`. Duplikat tidak masuk, dan webhook tetap menjawab `202` dengan `duplicate:true`. Karena data sudah tersimpan sebelum menjawab, event yang diterima tidak hilang walau server crash.
+3. Worker di background menandatangani event (`HMAC-SHA256(secret, timestamp.nonce.body)` di `X-Signature`) lalu mengirimnya ke NetSuite. Sukses jadi `sent`. Timeout, 5xx, atau 429 dicoba lagi dengan exponential backoff plus jitter. 4xx lainnya atau percobaan habis jadi `dead` (dicek manual). Event yang tertahan di `processing` karena crash dikembalikan ke `pending` saat service nyala lagi.
+4. Key yang sama ikut dikirim ke NetSuite lewat `Idempotency-Key`, jadi NetSuite bisa membuang kiriman ulang dari kita. Pengirimannya minimal sekali, dan dengan langkah ini efeknya jadi sekali.
 
-## 4. Mitigasi N+1 dengan DataLoader (Module 3)
-Query `transactions { location { name } visitorsAtLocationThatDay }` atas *N* transaksi secara naif menjalankan *N* lookup lokasi + *N* query pengunjung ke BigQuery (BigQuery ditagih per query dan lambat, jadi ini mahal).
-`createLoaders()` (satu set **per request**, tanpa kebocoran cache antar pengguna) mendefinisikan dua loader. Setiap `loader.load(key)` dalam tick yang sama dikumpulkan, **di-de-duplikasi**, lalu diteruskan ke satu fungsi batch yang menjalankan satu query `WHERE … IN UNNEST(@ids)` dan mengembalikan hasil sesuai urutan key. Terverifikasi di log server: 6 transaksi → **1** query lokasi + **1** query pengunjung; `dailyMetrics` untuk 9 kombinasi lokasi-hari → **1** query pengunjung.
+## 2. Autentikasi ke BigQuery dari server on-premise (Module 2)
+
+Pilihan saya Workload Identity Federation (WIF) dengan service account impersonation, jadi tidak ada JSON key berumur panjang di server.
+
+- Server edge membuktikan identitasnya ke identity provider yang dipercaya (OIDC IdP on-prem seperti Keycloak, atau sertifikat X.509 lewat mTLS). Google STS menukarnya dengan token berumur pendek yang bertindak sebagai service account khusus, `sa-iot-edge`.
+- File konfigurasinya dibuat dengan `gcloud iam workload-identity-pools create-cred-config ... --output-file=wif-credential-config.json` dan tidak berisi rahasia. `GOOGLE_APPLICATION_CREDENTIALS` tinggal diarahkan ke file itu.
+- Hak aksesnya minimal: `sa-iot-edge` hanya dapat `roles/bigquery.dataEditor` untuk satu tabel atau dataset, dan attribute condition di pool membatasi host edge yang boleh memakainya.
+- Kalau tidak ada IdP, cadangannya service account key di `/etc/...` (mode 600, milik `edgeapp`) yang dirotasi tiap 90 hari. Ini opsi yang lebih lemah.
+
+Micro-batching: tiap request kamera disimpan di buffer SQLite lokal dan langsung dijawab 202. Setiap 60 detik, sebuah timer mengirim sampai 500 baris sekali panggil ke BigQuery, dan baris baru dihapus dari buffer setelah BigQuery mengonfirmasi. Kalau BigQuery tidak terjangkau, data tetap aman dan dicoba lagi di putaran berikutnya. `insertId` diisi `event_id` untuk membantu membuang kiriman ganda (best-effort).
+
+Catatan: BigQuery Sandbox tidak mendukung streaming insert. Untuk pengujian di free tier saya pakai `BQ_MODE=mock`; alternatifnya load job.
+
+## 3. OIDC, IAM, dan Secret Manager di GCP (Module 3)
+
+Untuk deploy GraphQL saya pilih Cloud Run: container stateless, bisa scale to zero, HTTPS sudah tersedia, dan mudah terhubung ke IAM dan Secret Manager. GKE terasa berlebihan untuk satu API. Bagian ini baru rancangan, belum saya deploy ke GCP sungguhan.
+
+- **Tanpa JSON key.** Cloud Run berjalan dengan service account khusus (`sa-graphql-mw`). Library Google mengambil token berumur pendek untuknya dari metadata server (ADC), jadi tidak ada kunci di kode atau repo. Rolenya: `bigquery.dataViewer`, `bigquery.jobUser`, `bigquery.dataEditor` hanya untuk tabel fact NetSuite, dan `secretmanager.secretAccessor` hanya untuk satu secret.
+- **Akses masuk.** Deploy dengan `--no-allow-unauthenticated`. Pemanggil (backend BI atau NetSuite) mengirim OIDC ID token yang ditandatangani Google, dengan audience URL service, dan harus punya `roles/run.invoker`.
+- **CI/CD.** GitHub Actions masuk lewat WIF (token OIDC GitHub ditukar jadi kredensial sementara), jadi deploy pun tanpa key.
+- **Secret Manager.** `tokenUrl`, `clientId`, dan `clientSecret` OAuth2 NetSuite disimpan sebagai satu secret JSON, `netsuite-oauth`. Aplikasi membacanya saat runtime (`secrets.js`), meng-cache 5 menit, menyimpan access token hanya di memori, dan tidak pernah mencatatnya di log. Di produksi versinya dikunci, rotasi dengan menambah versi baru, dan akses terekam di Cloud Audit Logs. Alternatifnya `gcloud run deploy --set-secrets`.
+
+## 4. N+1 dan DataLoader (Module 3)
+
+Query `transactions { location { name } visitorsAtLocationThatDay }` untuk N transaksi, kalau tiap transaksi memicu satu lookup lokasi dan satu query pengunjung, jadi N + N query ke BigQuery. Itu lambat dan mahal karena BigQuery ditagih per query.
+
+Solusinya DataLoader. `createLoaders()` membuat dua loader (lokasi dan pengunjung) untuk setiap request, supaya cache tidak bocor antar pengguna. Semua `loader.load(key)` dalam satu putaran dikumpulkan, key kembar dibuang, lalu dikirim sebagai satu query `WHERE ... IN UNNEST(@ids)` dan hasilnya dikembalikan sesuai urutan key. Di log server: 6 transaksi hanya menghasilkan 1 query lokasi dan 1 query pengunjung, dan `dailyMetrics` untuk 9 kombinasi lokasi dan hari hanya 1 query pengunjung.
 
 ## 5. Star schema (Module 4)
-Dua fact (`fact_transactions`, `fact_iot_camera_events`) berbagi dimensi yang sama (`dim_location`, `dim_date`). Dipartisi menurut tanggal, di-cluster menurut `location_id`. Query conversion rate mengagregasi tiap fact ke level *lokasi × tanggal* **sebelum** di-join agar tidak terjadi fan-out.
+
+Ada dua fact table (`fact_transactions` dan `fact_iot_camera_events`) yang memakai dua dimension yang sama (`dim_location` dan `dim_date`). Tabel dipartisi per tanggal dan di-cluster per `location_id`. Di query conversion rate, tiap fact saya agregasi dulu ke level lokasi dan tanggal, baru di-join, supaya barisnya tidak berlipat ganda.
 
 ## Asumsi
-Memakai mock environment (tanpa Opera/NetSuite/GCP asli); format payload/HMAC NetSuite diasumsikan (`timestamp.nonce.body`); `Transactions` di GraphQL diambil dari NetSuite sesuai soal (di produksi dapat dibaca dari `fact_transactions`).
+
+- Opera dan NetSuite tidak dipakai sungguhan, semuanya mock.
+- Format payload dan tanda tangan NetSuite (`timestamp.nonce.body`) adalah asumsi saya.
+- Data `Transactions` di GraphQL saya ambil dari NetSuite sesuai soal. Di produksi, datanya bisa juga dibaca dari `fact_transactions`.
